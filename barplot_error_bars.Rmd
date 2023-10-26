@@ -1,0 +1,204 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-10-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+source("/home/phe.gov.uk/philip.r.davies/Documents/R-projects/RT-Gene/utils.R")
+raw_data <- read.delim("/home/phe.gov.uk/philip.r.davies/Documents/Mutational Signatures/analysis/mut_catalogue_sample.txt")
+
+coldata <- read.csv("/home/phe.gov.uk/philip.r.davies/Documents/Mutational Signatures/analysis/design.csv", stringsAsFactors = T)
+
+ord_col <- match(raw_data[,3:14]|>colnames(),
+                 coldata$Mouse|>as.character())
+
+coldata <- coldata[ord_col,]
+cbind(raw_data[,-c(1,2)]|>colnames(),
+coldata$Mouse|>as.character())
+```
+
+
+```{r}
+log2_pseud <- \(x) log2(x + 1)
+prcomp_test <- raw_data[,-c(1,2)]|>
+  #log2_pseud()|>
+  t()|>
+  prcomp(scale = T)
+
+plot(prcomp_test$x[,1:2],
+     col = coldata$SPM,
+     pch = coldata$Sex|>as.numeric(),
+     main = "SPM")
+plot(prcomp_test$x[,1:2],
+     col = coldata$Batch,
+     pch = coldata$Sex|>as.numeric(),
+     main = "Batch")
+```
+
+```{r}
+x <- raw_data[1,-c(1,2)]
+lm(as.numeric(x) ~ Batch + Sex + SPM,
+                        data = coldata)|>
+            summary()|>
+            coef()
+plot(coldata$SPM, x)
+```
+
+
+```{r}
+library(MASS)
+coldata$SPM <- relevel(coldata$SPM, ref = "Sham")
+p_values <- raw_data[,-c(1,2)]|>
+  apply(1,\(x)
+        {
+          out <- lm(as.numeric(x) ~ Batch + Sex + SPM,
+                        data = coldata)|>
+            summary()|>
+            coef()
+          return(out[4,4])
+  })#|>p.adjust(method = "fdr")
+
+range(p_values)
+hist(p_values, breaks = 100, xlim = c(0,0.05))
+```
+
+```{r}
+x <- raw_data[1,-c(1,2)]
+fit1 <- lm(as.numeric(x) ~ Batch + Sex + SPM,
+                        data = coldata)
+fit2 <- lm(as.numeric(x) ~ Batch + Sex,
+                        data = coldata)
+
+test_stat <- 2*(logLik(fit1)-logLik(fit2))
+p_chi <- pchisq(test_stat, df = 1, lower.tail = F)
+
+
+#2*loglikelihood(complex) - 2*loglikelihood(nested)
+```
+
+Is it appropriate to use LRT? Not sure, we are only looking for significance between levels of one factor. 
+
+```{r}
+p_ltr <- raw_data[,-c(1,2)]|>
+  apply(1,\(x)
+        {
+          full <- lm(as.numeric(x) ~ Batch + Sex + SPM,
+                        data = coldata)|>
+            logLik()
+          null <- lm(as.numeric(x) ~ Batch + Sex,
+                        data = coldata)|>
+            logLik()
+          test_stat <- 2*(full-null)
+          pval <- test_stat|>pchisq(df = 1, lower.tail = F)
+          
+          return(pval)
+  })#|>p.adjust(method = "fdr")
+
+hist(p_ltr, breaks = 100, xlim = c(0,0.05))
+```
+
+```{r}
+# Using LRT
+# mut_id <- which(p_ltr<0.05)
+# mut_sig <- raw_data[mut_id,c(1,2)]
+# mut_sig <- cbind(mut_sig, p = p_ltr[mut_id])
+
+mut_id <- which(p_values<0.05)
+mut_sig <- raw_data[mut_id,c(1,2)]
+mut_sig <- cbind(mut_sig, p = p_ltr[mut_id])
+```
+
+
+
+```{r}
+# Assuming your data frame is called 'df'
+library(reshape2)
+
+# Melt the data into long format
+data_long <- melt(raw_data, id.vars = c("MutationType", "Mutation"), variable.name = "Sample", value.name = "Value")
+
+ir_mice <- coldata$Mouse|>split(coldata$SPM)
+data_long$Treated <- data_long$Sample%in%ir_mice$`3 Gy`
+
+# Print the resulting long format data frame
+names(data_long)
+```
+
+
+
+```{r}
+treated <- filter(data_long, Treated)
+boxplot(Value ~ MutationType, data = treated,
+        las = 2, outline = F)
+```
+
+```{r}
+boxplot(Value ~ Treated + Mutation, data = data_long,
+        col = c("grey", "red"), 
+        las = 2, outline = F,
+        yaxt = "n",
+        xlab = "",
+        lty = 1)
+axis(2, at = seq(0, 40, 10),
+     labels = seq(0, 40, 10))
+```
+
+
+
+```{r}
+pdf("SPM_box.pdf", width = 15)
+test <- boxplot(Value ~ Treated + MutationType, data = data_long,
+        col = c("grey", "red"), 
+        las = 2, outline = F,
+        yaxt = "n",
+        xaxt = "n",
+        xlab = "",
+        lty = 1,
+        ylab = "Counts",
+        range = 0)
+
+x_labs <- test$names|>get_str("[.]",2)|>
+  unique()
+lab_coor <- cbind(seq(1, 192, 2)+0.5, x_labs)
+axis(2, at = seq(0, 40, 10),
+     labels = seq(0, 40, 10))
+axis(1, lab_coor[,1], lab_coor[,2],
+     las = 2, cex.axis = 0.7)
+sig_id <- match(mut_sig$MutationType, lab_coor[,2])
+abline(v = lab_coor[,1], col = adjustcolor(1, 0.1))
+text(lab_coor[sig_id,1], 20, "*")
+legend("topleft", c("3 Gy", "Control"),
+       pch = 15, col = c("red", "grey"), bty = 1)
+dev.off()
+```
+
+
+
+```{r}
+ind_data <- read.delim("/home/phe.gov.uk/philip.r.davies/Documents/Mutational Signatures/analysis/indel_classified_list_mm10_ID83_exp.txt")
+
+ind_data$indel <- ind_data$typeCOSMIC|>
+  get_str(":", 2)|>as.factor()
+
+ind_data$Nmut <- ind_data$typeCOSMIC|>
+  get_str(":", 1)|>as.factor()
+
+ind_data$Nhom <- ind_data$typeCOSMIC|>
+  get_str(":", 4)|>as.factor()
+```
+
+
+
+```{r}
+ind_data <- read.delim("/home/phe.gov.uk/philip.r.davies/Documents/Mutational Signatures/analysis/indel_classified_list_mm10_ID83.txt")
+```
+
+
+
